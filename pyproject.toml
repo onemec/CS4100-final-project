@@ -12,8 +12,8 @@ name = "cs4100-final-project"
 version = "0.1.0"
 description = "A package that helps visualize the \"best path\" to graduation for CS@NEU."
 authors = [
-    {name = "Oliver Nemec", email = "28827159+onemec@users.noreply.github.com"},
-    {name = "Dylan Pham", email = "32346117+dylan-pham@users.noreply.github.com"},
+    { name = "Oliver Nemec", email = "28827159+onemec@users.noreply.github.com" },
+    { name = "Dylan Pham", email = "32346117+dylan-pham@users.noreply.github.com" },
 ]
 dependencies = [
     "networkx>=3.2.1",
@@ -21,4 +21,4 @@ dependencies = [
 ]
 requires-python = ">=3.11,<4.0"
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }

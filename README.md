@@ -14,6 +14,7 @@
 ## Install
 
 (suggested installation using [pdm](https://pdm-project.org/latest/#recommended-installation-method))
+
 ```sh
 pdm install
 ```
@@ -30,7 +31,8 @@ pdm run main.py
 
 ## 🤝 Contributing
 
-Contributions, issues and feature requests are welcome!<br/>Feel free to check [issues page](https://github.com/onemec/CS4100-final-project/issues). 
+Contributions, issues and feature requests are welcome!<br/>Feel free to
+check [issues page](https://github.com/onemec/CS4100-final-project/issues).
 
 ## Show your support
 
