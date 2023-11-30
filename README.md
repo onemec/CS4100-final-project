@@ -21,7 +21,7 @@ pdm install
 ## Usage
 
 ```sh
-pdm run main
+pdm run main.py
 ```
 
 ## Authors
