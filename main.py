@@ -24,17 +24,18 @@ def load_json(file_path: str) -> dict:
 
 
 def handle_requirements(
-    graph: nx.Graph, requirements: list, parent_node: str
+    graph: nx.Graph, requirements: list, parent_node: str, prerequisites: dict
 ) -> nx.Graph:
     """
     Handle requirements and build a graph representation.
 
-    This function takes a graph, a list of requirements, and a parent node as input. It iterates over each requirement and adds course nodes to the graph if the requirement type is "COURSE". It also adds edges from the parent node to the course nodes. If the requirement type is "AND", "OR", or "XOM", and there are associated courses, it recursively calls itself with the courses as requirements. Finally, it returns the updated graph.
+    This function takes a graph, a list of requirements, a parent node, and prerequisite information as input. It iterates over each requirement and adds course nodes to the graph if the requirement type is "COURSE". It also adds edges from the parent node to the course nodes. If the requirement type is "AND", "OR", or "XOM", and there are associated courses, it recursively calls itself with the courses as requirements. Finally, it returns the updated graph.
 
     Args:
         graph (nx.Graph): The graph object to which the nodes and edges will be added.
         requirements (list): A list of requirements.
         parent_node (str): The parent node to which the course nodes will be connected.
+        prerequisites (dict): Prerequisite information for courses.
 
     Returns:
         nx.Graph: The updated graph object.
@@ -44,21 +45,32 @@ def handle_requirements(
     """
     for requirement in requirements:
         if requirement["type"] == "COURSE":
-            graph.add_node(requirement["classId"], subject=requirement["subject"])
-            graph.add_edge(parent_node, requirement["classId"])
+            course_id = requirement["classId"]
+            graph.add_node(course_id, subject=requirement["subject"])
+            graph.add_edge(parent_node, course_id)
+
+            # Handle pre-requisites if they exist
+            if course_id in prerequisites:
+                for prereq_course in prerequisites[course_id]:
+                    graph.add_node(
+                        prereq_course, subject=prerequisites[course_id][prereq_course]
+                    )
+                    graph.add_edge(prereq_course, course_id)
+
         elif requirement["type"] in ["AND", "OR", "XOM"]:
             if "courses" in requirement:
                 for course in requirement["courses"]:
-                    handle_requirements(graph, [course], parent_node)
+                    handle_requirements(graph, [course], parent_node, prerequisites)
     return graph
 
 
-def create_course_graph(data: dict) -> nx.Graph:
+def create_course_graph(data: dict, prerequisites: dict) -> nx.Graph:
     """
     Create a graph of course requirements.
 
     Args:
         data (dict): Parsed JSON data
+        prerequisites (dict): Prerequisite information for courses
 
     Returns:
         nx.Graph: NetworkX graph object representing course requirements
@@ -70,7 +82,9 @@ def create_course_graph(data: dict) -> nx.Graph:
     for section in requirement_sections:
         section_title = section["title"]
         course_graph.add_node(section_title, node_type="section")
-        handle_requirements(course_graph, section["requirements"], section_title)
+        handle_requirements(
+            course_graph, section["requirements"], section_title, prerequisites
+        )
 
     return course_graph
 
@@ -103,9 +117,11 @@ def visualize_course_graph(course_graph: nx.Graph):
     plt.show()
 
 
+# Load pre-requisite data
+prerequisite_data = load_json("prerequisite_data.json")
 # Load JSON data
 json_data = load_json("Computer_Science_BACS-2022.json")
 # Create course graph
-course_graph = create_course_graph(json_data)
+course_graph = create_course_graph(json_data, prerequisite_data)
 # Visualize the graph
 visualize_course_graph(course_graph)
