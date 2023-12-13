@@ -26,3 +26,4 @@ In an abstract overview, our heuristic considers the following criteria:
 - Alternative/potential thing we could do:
     - Visualize the "bruteforce" (or search alg) option in NetworkX of taking all possible courses in first semester,
       second semester, etc. and having the graph of paths to courses
+    - Switch to using a [Multipartite graph](https://networkx.org/documentation/stable/auto_examples/drawing/plot_multipartite_graph.html)

@@ -18,6 +18,7 @@ authors = [
 dependencies = [
     "networkx>=3.2.1",
     "matplotlib>=3.8.2",
+    "Pydantic>=2.5.2",
 ]
 requires-python = ">=3.11,<4.0"
 readme = "README.md"
