@@ -4,7 +4,7 @@ from typing import List, Union, Optional
 import networkx as nx
 import matplotlib.pyplot as plt
 import heapq
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RequirementType(str, Enum):
@@ -37,18 +37,26 @@ class FullCourse(Requirement):
 
 class AndRequirement(Requirement):
     type: RequirementType = RequirementType.AND
-    courses: Union[List[Requirement], None]
+    values: Union[
+        List[Union[Course, FullCourse, "OrRequirement", "AndRequirement", "Section"]],
+        None,
+    ] = Field(alias="courses")
 
 
 class OrRequirement(Requirement):
     type: RequirementType = RequirementType.OR
-    courses: Union[List[Requirement], None]
+    values: Union[
+        List[Union[Course, FullCourse, "OrRequirement", AndRequirement, "Section"]],
+        None,
+    ] = Field(alias="courses")
 
 
 class Section(BaseModel):
     type: RequirementType = RequirementType.SECTION
     title: str
-    requirements: Union[List[Requirement], None]
+    values: Union[
+        List[Union[Course, FullCourse, OrRequirement, AndRequirement, "Section"]], None
+    ] = Field(alias="requirements")
 
 
 def load_json(file_path: str) -> dict:
@@ -73,7 +81,9 @@ def load_json(file_path: str) -> dict:
 
 def handle_requirements(
     graph: nx.DiGraph,
-    requirements: Optional[List[Requirement]],
+    requirements: Optional[
+        List[Union[Course, FullCourse, OrRequirement, AndRequirement, Section]]
+    ],
     parent_node: str,
     prerequisites: dict,
 ):
@@ -94,8 +104,10 @@ def handle_requirements(
                     full_course = FullCourse(
                         classId=requirement.classId,
                         subject=requirement.subject,
-                        credits=int(entry.get("maxCredits"))
-                        | int(entry.get("minCredits")),
+                        credits=(
+                            int(entry.get("maxCredits")) + int(entry.get("minCredits"))
+                        )
+                        // 2,
                         prereqs=[
                             f"{course.get('subject')} {course.get('classId')}"
                             for course in entry.get("prereqs", {}).get("values", [])
@@ -127,21 +139,26 @@ def handle_requirements(
                             full_course_name, curr_name_as_parent, relation="req"
                         )
 
-                    handle_requirements(
-                        graph,
-                        [
-                            Course(**req)
-                            for req in entry.get("prereqs", {}).get("values", [])
-                            if req is dict
-                        ],
-                        curr_name_as_parent,
-                        prerequisites,
-                    )
+                    # Handling nested 'and'/'or' structures within prereqs
+                    courses = entry.get("prereqs", {}).get("values", [])
+                    if isinstance(courses, dict) and courses.get("type") in [
+                        "and",
+                        "or",
+                    ]:
+                        courses = courses.get("values", [])
 
+                    for req in courses:
+                        if isinstance(req, dict):
+                            handle_requirements(
+                                graph,
+                                [create_model_by_type(req)],
+                                curr_name_as_parent,
+                                prerequisites,
+                            )
                     handle_requirements(
                         graph,
                         [
-                            Course(**req)
+                            create_model_by_type(req)
                             for req in entry.get("coreqs", {}).get("values", [])
                             if req is dict
                         ],
@@ -154,12 +171,19 @@ def handle_requirements(
                 f"{parent_node}_{requirement.type}_{i}"  # Create a new node for AND/OR
             )
             i += 1
-            graph.add_node(new_node, node_type=requirement.type)
-            graph.add_edge(
-                parent_node, new_node, relation="req"
-            )  # Connect parent node to AND/OR node
-            for course_id in requirement.courses:
-                handle_requirements(graph, [course_id], new_node, prerequisites)
+            if isinstance(requirement, AndRequirement):
+                graph.add_node(new_node)
+                graph.add_edge(parent_node, new_node, relation="req")
+            handle_requirements(
+                graph,
+                [
+                    create_model_by_type(req)
+                    for req in requirement.values
+                    if req is dict
+                ],
+                new_node,
+                prerequisites,
+            )
 
 
 def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[Course]):
@@ -192,11 +216,35 @@ def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[C
     return unsatisfied_categories, shortest_fulfillment
 
 
+def check_if_met(classes_taken: List[Course], requirement: Requirement) -> bool:
+    if isinstance(requirement, (Course, FullCourse)):
+        return any(
+            course.subject == requirement.subject
+            and course.classId == requirement.classId
+            for course in classes_taken
+        )
+
+    elif isinstance(requirement, AndRequirement):
+        return all(check_if_met(classes_taken, req) for req in requirement.courses)
+
+    elif isinstance(requirement, OrRequirement):
+        return any(check_if_met(classes_taken, req) for req in requirement.courses)
+
+    elif isinstance(requirement, Section):
+        return all(
+            check_if_met(classes_taken, req)
+            for req in requirement.requirements
+            if req is not None
+        )
+
+    return False
+
+
 def create_model_by_type(requirement: dict):
     if requirement == "Graduate Admission":
         return
     elif isinstance(requirement, dict):
-        req_type = requirement.get("type")
+        req_type = requirement.get("type", RequirementType.COURSE)
         if req_type == RequirementType.COURSE:
             return Course.model_validate(requirement)
         elif req_type == RequirementType.FULL_COURSE:
@@ -206,6 +254,7 @@ def create_model_by_type(requirement: dict):
         elif req_type == RequirementType.OR:
             return OrRequirement.model_validate(requirement)
         elif req_type == RequirementType.AND:
+            print(f"AND: {requirement}")
             return AndRequirement.model_validate(requirement)
     else:
         raise ValueError("Invalid requirement format:", requirement)
