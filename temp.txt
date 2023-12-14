@@ -1,0 +1,48 @@
+available_courses: given what I've taken so far, what courses are available for me to take next? 
+(i.e. what courses have I satisfied the prerequisites for?)
+in:
+- list of courses taken so far
+out:
+- list of courses i can take
+implementation details: 
+- iterate through all courses in dataset and check if prerequisites are satisfied (using is_requirements_satisfied) 
+and course is not in input list. if so, add to output list
+
+is_requirements_satisifed: given a list of courses taken, have I satisfied a given requirement?
+in:
+- requirement (ex. security course requirement)
+- list of courses taken
+out:
+- boolean
+implementation details:
+- call corresponding helper function for a type of requirement
+
+all_cs_requirements_satisfied: given a list of courses taken, have I satisfied all requirements for CS curriculum?
+in:
+- list of courses taken
+out:
+- boolean
+
+create_graph: given a list of available courses, create a graph with all possible paths
+in:
+- list of available courses (ex. during first year, only classes like CS1800 are available)
+- list of courses taken so far
+out:
+- parent node of graph
+impl details:
+-  recursively call create_graph on each child node (i.e. each course in the list of available courses) and create edge between parent node 
+and return value of create_graph
+- ^ update available courses accordingly (i.e. remove course that was just taken from list of available courses and add courses 
+that are now available)
+- ^ update courses taken so far accordingly (i.e. add course that was just taken to list of courses taken so far)
+- base case is all_cs_requirements_satisfied is true given taken_so_far, return parent node
+
+main function: call create_graph with input as CS 1800 (assume we take this first to make it easier for ourselves with jsut 1 parent node) and 
+list of courses taken so far as empty list
+
+
+notes: 
+- ignore co-requisites for now to make it easier?
+- a "requirement" can be defined as the set of pre-requisites for a course or a set of courses (like CS fundamental coures) - we can 
+break down the logic for each requirement into separate functions. Example usage - is_requirements_satisfied("CS fundamental courses", courses_taken), 
+is_requirements_satisfied("pre-reqs for CS 3000", courses_taken) 
