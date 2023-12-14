@@ -5,7 +5,6 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import heapq
 from pydantic import BaseModel
-from pyparsing import Or
 
 
 class RequirementType(str, Enum):
@@ -77,7 +76,7 @@ def handle_requirements(
     requirements: Optional[List[Requirement]],
     parent_node: str,
     prerequisites: dict,
-) -> nx.DiGraph:
+):
     # If there are no requirements, just return the current graph
     if not requirements or len(requirements) == 0:
         return graph
@@ -88,12 +87,15 @@ def handle_requirements(
         if isinstance(requirement, (Course, FullCourse)):
             for entry in prerequisites:
                 # If the current course entry matches the prerequisite
-                if entry.get("subject") == requirement.subject and int(entry.get("classId")) == requirement.classId:
+                if (
+                    entry.get("subject") == requirement.subject
+                    and int(entry.get("classId")) == requirement.classId
+                ):
                     full_course = FullCourse(
                         classId=requirement.classId,
                         subject=requirement.subject,
                         credits=int(entry.get("maxCredits"))
-                                | int(entry.get("minCredits")),
+                        | int(entry.get("minCredits")),
                         prereqs=[
                             f"{course.get('subject')} {course.get('classId')}"
                             for course in entry.get("prereqs", {}).get("values", [])
@@ -104,11 +106,9 @@ def handle_requirements(
                             for course in entry.get("coreqs", {}).get("values", [])
                         ],
                     )
-                    full_course_name = (
-                        f"{full_course.subject} {full_course.classId}"
-                    )
+                    full_course_name = f"{full_course.subject} {full_course.classId}"
                     graph.add_node(full_course_name)
-                    graph.add_edge(parent_node, full_course_name)
+                    graph.add_edge(parent_node, full_course_name, relation="req")
                     # Initially handle corequisites naively, then update them accordingly in recursive calls
                     for coreq_node in full_course.coreqs:
                         graph.add_node(coreq_node)
@@ -116,25 +116,34 @@ def handle_requirements(
 
                     # If the prerequisites are AND type, create a single AND node, else it is an OR type, and any of the sub-nodes can satisfy
                     curr_name_as_parent = full_course_name
-                    if entry.get("prereqs").get("type").upper() == RequirementType.AND.value:
-                        curr_name_as_parent = f"{full_course.subject} {full_course.classId} {requirement.type}"
+                    if (
+                        entry.get("prereqs")
+                        and entry.get("prereqs").get("type").upper()
+                        == RequirementType.AND.value
+                    ):
+                        curr_name_as_parent = f"{full_course.subject} {full_course.classId} {RequirementType.AND.value}"
                         graph.add_node(curr_name_as_parent)
+                        graph.add_edge(
+                            full_course_name, curr_name_as_parent, relation="req"
+                        )
 
-                    # Fixing the recursive call by passing the correct prerequisites
                     handle_requirements(
                         graph,
                         [
-                            create_model_by_type(req)
+                            Course(**req)
                             for req in entry.get("prereqs", {}).get("values", [])
+                            if req is dict
                         ],
                         curr_name_as_parent,
                         prerequisites,
                     )
+
                     handle_requirements(
                         graph,
                         [
-                            create_model_by_type(req)
+                            Course(**req)
                             for req in entry.get("coreqs", {}).get("values", [])
+                            if req is dict
                         ],
                         parent_node,
                         prerequisites,
@@ -146,11 +155,11 @@ def handle_requirements(
             )
             i += 1
             graph.add_node(new_node, node_type=requirement.type)
-            graph.add_edge(parent_node, new_node)  # Connect parent node to AND/OR node
+            graph.add_edge(
+                parent_node, new_node, relation="req"
+            )  # Connect parent node to AND/OR node
             for course_id in requirement.courses:
                 handle_requirements(graph, [course_id], new_node, prerequisites)
-
-    return graph
 
 
 def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[Course]):
@@ -184,7 +193,7 @@ def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[C
 
 
 def create_model_by_type(requirement: dict):
-    if requirement == 'Graduate Admission':
+    if requirement == "Graduate Admission":
         return
     elif isinstance(requirement, dict):
         req_type = requirement.get("type")
@@ -218,9 +227,7 @@ def create_course_graph(data: dict, prerequisites: dict) -> nx.DiGraph:
     for section in data["requirementSections"]:
         c_graph.add_node(section["title"], node_type="section")
         reqs = [create_model_by_type(req) for req in section.get("requirements")]
-        handle_requirements(
-            c_graph, reqs, section["title"], prerequisites
-        )
+        handle_requirements(c_graph, reqs, section["title"], prerequisites)
 
     return c_graph
 
