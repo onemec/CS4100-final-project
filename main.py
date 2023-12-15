@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 
 
 class RequirementType(str, Enum):
-    ANY = "ANY"
     COURSE = "COURSE"
     SECTION = "SECTION"
     FULL_COURSE = "FULL_COURSE"
@@ -79,6 +78,14 @@ def load_json(file_path: str) -> dict:
         return json.load(json_file)
 
 
+def add_course_to_graph():
+    pass
+
+
+def add_and_or_to_graph():
+    pass
+
+
 def handle_requirements(
     graph: nx.DiGraph,
     requirements: Optional[
@@ -87,6 +94,7 @@ def handle_requirements(
     parent_node: str,
     prerequisites: dict,
 ):
+    # TODO: check for what edges/nodes are already in graph, to avoid recursion
     # If there are no requirements, just return the current graph
     if not requirements or len(requirements) == 0:
         return graph
@@ -112,19 +120,26 @@ def handle_requirements(
                             f"{course.get('subject')} {course.get('classId')}"
                             for course in entry.get("prereqs", {}).get("values", [])
                             if course not in ["Graduate Admission"]
-                        ],
+                        ]
+                        if entry.get("prereqs", {}).get("values")
+                        else None,
                         coreqs=[
                             f"{course.get('subject')} {course.get('classId')}"
                             for course in entry.get("coreqs", {}).get("values", [])
-                        ],
+                        ]
+                        if entry.get("coreqs", {}).get("values")
+                        else None,
                     )
                     full_course_name = f"{full_course.subject} {full_course.classId}"
                     graph.add_node(full_course_name)
                     graph.add_edge(parent_node, full_course_name, relation="req")
                     # Initially handle corequisites naively, then update them accordingly in recursive calls
-                    for coreq_node in full_course.coreqs:
-                        graph.add_node(coreq_node)
-                        graph.add_edge(coreq_node, full_course_name, relation="coreq")
+                    if full_course.coreqs:
+                        for coreq_node in full_course.coreqs:
+                            graph.add_node(coreq_node)
+                            graph.add_edge(
+                                coreq_node, full_course_name, relation="coreq"
+                            )
 
                     # If the prerequisites are AND type, create a single AND node, else it is an OR type, and any of the sub-nodes can satisfy
                     curr_name_as_parent = full_course_name
@@ -132,6 +147,7 @@ def handle_requirements(
                         entry.get("prereqs")
                         and entry.get("prereqs").get("type").upper()
                         == RequirementType.AND.value
+                        and len(entry.get("prereqs").get("values")) > 0
                     ):
                         curr_name_as_parent = f"{full_course.subject} {full_course.classId} {RequirementType.AND.value}"
                         graph.add_node(curr_name_as_parent)
@@ -161,26 +177,21 @@ def handle_requirements(
                             create_model_by_type(req)
                             for req in entry.get("coreqs", {}).get("values", [])
                             if req is dict
-                        ],
+                        ]
+                        if entry.get("coreqs", {}).get("values")
+                        else None,
                         parent_node,
                         prerequisites,
                     )
 
-        elif isinstance(requirement, (AndRequirement, OrRequirement, Section)):
-            new_node = (
-                f"{parent_node}_{requirement.type}_{i}"  # Create a new node for AND/OR
-            )
+        elif isinstance(requirement, (AndRequirement, OrRequirement)):
+            new_node = f"{parent_node}_{requirement.type.value}_{i}"
             i += 1
-            if isinstance(requirement, AndRequirement):
-                graph.add_node(new_node)
-                graph.add_edge(parent_node, new_node, relation="req")
+            graph.add_node(new_node)
+            graph.add_edge(parent_node, new_node, relation="req")
             handle_requirements(
                 graph,
-                [
-                    create_model_by_type(req)
-                    for req in requirement.values
-                    if req is dict
-                ],
+                requirement.values.copy(),
                 new_node,
                 prerequisites,
             )
@@ -254,7 +265,6 @@ def create_model_by_type(requirement: dict):
         elif req_type == RequirementType.OR:
             return OrRequirement.model_validate(requirement)
         elif req_type == RequirementType.AND:
-            print(f"AND: {requirement}")
             return AndRequirement.model_validate(requirement)
     else:
         raise ValueError("Invalid requirement format:", requirement)
