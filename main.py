@@ -1,10 +1,11 @@
 import json
 from enum import Enum
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Tuple
 import networkx as nx
 import matplotlib.pyplot as plt
-import heapq
 from pydantic import BaseModel, Field
+
+FULL_COURSE_LOAD_CREDITS = 18
 
 
 class RequirementType(str, Enum):
@@ -30,8 +31,20 @@ class FullCourse(Requirement):
     subject: str
     classId: int
     credits: int
-    prereqs: Union[List[str], None]
-    coreqs: Union[List[str], None]
+    prereqs: Union[
+        Tuple[
+            str,
+            Union[Course, "FullCourse", "OrRequirement", "AndRequirement", "Section"],
+        ],
+        None,
+    ]
+    coreqs: Union[
+        Tuple[
+            str,
+            Union[Course, "FullCourse", "OrRequirement", "AndRequirement", "Section"],
+        ],
+        None,
+    ]
 
 
 class AndRequirement(Requirement):
@@ -39,7 +52,7 @@ class AndRequirement(Requirement):
     values: Union[
         List[Union[Course, FullCourse, "OrRequirement", "AndRequirement", "Section"]],
         None,
-    ] = Field(alias="courses")
+    ]
 
 
 class OrRequirement(Requirement):
@@ -47,7 +60,7 @@ class OrRequirement(Requirement):
     values: Union[
         List[Union[Course, FullCourse, "OrRequirement", AndRequirement, "Section"]],
         None,
-    ] = Field(alias="courses")
+    ]
 
 
 class Section(BaseModel):
@@ -86,6 +99,63 @@ def add_and_or_to_graph():
     pass
 
 
+def node_to_name(
+    node: Union[Course, FullCourse, OrRequirement, AndRequirement, Section],
+    parent_node_name: str,
+    i: int,
+    graph,
+) -> tuple[str, int]:
+    if isinstance(node, dict):
+        model = create_model_by_type(node)
+        return node_to_name(
+            node=model, parent_node_name=parent_node_name, i=i, graph=graph
+        )
+    node_from_graph = get_node_from_graph(node, graph)
+    if node_from_graph is not None:
+        return node_from_graph, i
+    if isinstance(node, (Course, FullCourse)):
+        return f"{node.subject} {node.classId}", i
+    if isinstance(node, (OrRequirement, AndRequirement)):
+        return f"{parent_node_name}_{node.type.value}_{i}", i + 1
+    if isinstance(node, Section):
+        return f"{node.title}", i
+
+
+def get_node_from_graph(node_data, graph):
+    similar_node = None
+    for node in graph.nodes(data=True):
+        data = node[1].get("data")
+        if data:
+            if isinstance(data, (Course, FullCourse)) and isinstance(
+                node_data, (Course, FullCourse)
+            ):
+                if (
+                    data.subject == node_data.subject
+                    and data.classId == node_data.classId
+                ):
+                    similar_node = node[0]
+                    break
+            elif data == node_data:
+                similar_node = node[0]
+                break
+    return similar_node
+
+
+def add_node_with_check(
+    graph, node_data, node_name, parent_node, relation, prerequisites
+):
+    if similar_node := get_node_from_graph(node_data, graph):
+        graph.add_edge(parent_node, similar_node, relation=relation)
+        if relation == "coreq":
+            graph.add_edge(similar_node, parent_node, relation=relation)
+    else:
+        graph.add_node(node_name, data=node_data)
+        graph.add_edge(parent_node, node_name, relation=relation)
+        if relation == "coreq":
+            graph.add_edge(node_name, parent_node, relation=relation)
+            handle_requirements(graph, [node_data], parent_node, prerequisites)
+
+
 def handle_requirements(
     graph: nx.DiGraph,
     requirements: Optional[
@@ -94,8 +164,6 @@ def handle_requirements(
     parent_node: str,
     prerequisites: dict,
 ):
-    # TODO: check for what edges/nodes are already in graph, to avoid recursion
-    # If there are no requirements, just return the current graph
     if not requirements or len(requirements) == 0:
         return graph
 
@@ -109,6 +177,41 @@ def handle_requirements(
                     entry.get("subject") == requirement.subject
                     and int(entry.get("classId")) == requirement.classId
                 ):
+                    prereqs = None
+                    coreqs = None
+                    full_course_name = f"{requirement.subject} {requirement.classId}"
+                    if entry.get("prereqs", {}).get("values"):
+                        prereqs = (
+                            create_model_by_type(entry.get("prereqs", {}))
+                            if isinstance(entry.get("prereqs", {}), dict)
+                            else entry.get("prereqs", {})
+                        )
+                    if entry.get("coreqs", {}).get("values"):
+                        coreqs = (
+                            create_model_by_type(entry.get("coreqs", {}))
+                            if isinstance(entry.get("coreqs", {}), dict)
+                            else entry.get("coreqs", {})
+                        )
+                    prereqs = None
+                    coreqs = None
+                    if entry.get("prereqs", {}).get("values"):
+                        model_prereqs = entry.get("prereqs", {})
+                        if (
+                            isinstance(model_prereqs, dict)
+                            and "values" in model_prereqs
+                        ):
+                            model_prereqs["values"] = list(
+                                filter(None, model_prereqs.get("values", []))
+                            )
+                        prereq_name, i = node_to_name(
+                            model_prereqs, parent_node, i, graph
+                        )
+                        prereqs = (prereq_name, model_prereqs)
+                    if entry.get("coreqs", {}).get("values"):
+                        coreq_name, i = node_to_name(
+                            entry.get("coreqs", {}), parent_node, i, graph
+                        )
+                        coreqs = (coreq_name, entry.get("coreqs", {}))
                     full_course = FullCourse(
                         classId=requirement.classId,
                         subject=requirement.subject,
@@ -116,78 +219,44 @@ def handle_requirements(
                             int(entry.get("maxCredits")) + int(entry.get("minCredits"))
                         )
                         // 2,
-                        prereqs=[
-                            f"{course.get('subject')} {course.get('classId')}"
-                            for course in entry.get("prereqs", {}).get("values", [])
-                            if course not in ["Graduate Admission"]
-                        ]
+                        prereqs=prereqs
                         if entry.get("prereqs", {}).get("values")
                         else None,
-                        coreqs=[
-                            f"{course.get('subject')} {course.get('classId')}"
-                            for course in entry.get("coreqs", {}).get("values", [])
-                        ]
+                        coreqs=coreqs
                         if entry.get("coreqs", {}).get("values")
                         else None,
                     )
-                    full_course_name = f"{full_course.subject} {full_course.classId}"
-                    graph.add_node(full_course_name)
-                    graph.add_edge(parent_node, full_course_name, relation="req")
-                    # Initially handle corequisites naively, then update them accordingly in recursive calls
-                    if full_course.coreqs:
-                        for coreq_node in full_course.coreqs:
-                            graph.add_node(coreq_node)
-                            graph.add_edge(
-                                coreq_node, full_course_name, relation="coreq"
-                            )
 
-                    # If the prerequisites are AND type, create a single AND node, else it is an OR type, and any of the sub-nodes can satisfy
-                    curr_name_as_parent = full_course_name
-                    if (
-                        entry.get("prereqs")
-                        and entry.get("prereqs").get("type").upper()
-                        == RequirementType.AND.value
-                        and len(entry.get("prereqs").get("values")) > 0
-                    ):
-                        curr_name_as_parent = f"{full_course.subject} {full_course.classId} {RequirementType.AND.value}"
-                        graph.add_node(curr_name_as_parent)
-                        graph.add_edge(
-                            full_course_name, curr_name_as_parent, relation="req"
+                    if full_course_name not in graph:
+                        graph.add_node(full_course_name, data=full_course)
+                    else:
+                        graph.nodes[full_course_name]["data"] = full_course
+                    graph.add_edge(parent_node, full_course_name, relation="req")
+
+                    if full_course.coreqs and full_course.coreqs[1]:
+                        add_node_with_check(
+                            graph,
+                            full_course.coreqs[0],
+                            coreqs[0],
+                            full_course_name,
+                            "coreq",
+                            prerequisites,
                         )
 
-                    # Handling nested 'and'/'or' structures within prereqs
-                    courses = entry.get("prereqs", {}).get("values", [])
-                    if isinstance(courses, dict) and courses.get("type") in [
-                        "and",
-                        "or",
-                    ]:
-                        courses = courses.get("values", [])
-
-                    for req in courses:
-                        if isinstance(req, dict):
-                            handle_requirements(
-                                graph,
-                                [create_model_by_type(req)],
-                                curr_name_as_parent,
-                                prerequisites,
-                            )
-                    handle_requirements(
-                        graph,
-                        [
-                            create_model_by_type(req)
-                            for req in entry.get("coreqs", {}).get("values", [])
-                            if req is dict
-                        ]
-                        if entry.get("coreqs", {}).get("values")
-                        else None,
-                        parent_node,
-                        prerequisites,
-                    )
+                    if full_course.prereqs and full_course.prereqs[1]:
+                        add_node_with_check(
+                            graph,
+                            full_course.prereqs[0],
+                            prereqs[0],
+                            full_course_name,
+                            "req",
+                            prerequisites,
+                        )
 
         elif isinstance(requirement, (AndRequirement, OrRequirement)):
             new_node = f"{parent_node}_{requirement.type.value}_{i}"
             i += 1
-            graph.add_node(new_node)
+            graph.add_node(new_node, data=requirement)
             graph.add_edge(parent_node, new_node, relation="req")
             handle_requirements(
                 graph,
@@ -227,24 +296,44 @@ def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[C
     return unsatisfied_categories, shortest_fulfillment
 
 
-def check_if_met(classes_taken: List[Course], requirement: Requirement) -> bool:
-    if isinstance(requirement, (Course, FullCourse)):
+def check_if_requirements_met(
+    classes_taken: List[str], requirement: Union[str, None], c_graph: nx.DiGraph
+) -> bool:
+    if requirement is None:
+        return True
+    if isinstance(requirement, FullCourse):
+        return requirement.prereqs is None or check_if_requirements_met(
+            classes_taken, requirement.prereqs[0], c_graph
+        )
+
+    elif isinstance(requirement, Course):
         return any(
-            course.subject == requirement.subject
-            and course.classId == requirement.classId
+            course.split()[0] == requirement.subject
+            and course.split()[1] == requirement.classId
             for course in classes_taken
         )
 
-    elif isinstance(requirement, AndRequirement):
-        return all(check_if_met(classes_taken, req) for req in requirement.courses)
+    requirement_value = None
+    for node, data in c_graph.nodes(data=True):
+        if requirement == node:
+            requirement_value = data.get("data")
 
-    elif isinstance(requirement, OrRequirement):
-        return any(check_if_met(classes_taken, req) for req in requirement.courses)
-
-    elif isinstance(requirement, Section):
+    if isinstance(requirement_value, AndRequirement):
         return all(
-            check_if_met(classes_taken, req)
-            for req in requirement.requirements
+            check_if_requirements_met(classes_taken, req, c_graph)
+            for req in requirement_value.values
+        )
+
+    elif isinstance(requirement_value, OrRequirement):
+        return any(
+            check_if_requirements_met(classes_taken, req, c_graph)
+            for req in requirement_value.values
+        )
+
+    elif isinstance(requirement_value, Section):
+        return all(
+            check_if_requirements_met(classes_taken, req, c_graph)
+            for req in requirement_value.values
             if req is not None
         )
 
@@ -256,16 +345,40 @@ def create_model_by_type(requirement: dict):
         return
     elif isinstance(requirement, dict):
         req_type = requirement.get("type", RequirementType.COURSE)
+
+        if "courses" in requirement:
+            requirement["values"] = [
+                create_model_by_type(course)
+                for course in requirement.pop("courses")
+                if isinstance(course, dict)
+            ]
+        elif "values" in requirement:
+            if (
+                requirement["values"]
+                and len(requirement["values"]) > 0
+                and isinstance(requirement["values"][0], dict)
+            ):
+                requirement["values"] = [
+                    create_model_by_type(course)
+                    for course in requirement["values"]
+                    if isinstance(course, dict)
+                ]
+        if req_type in ["or", "and"]:
+            requirement["type"] = (
+                RequirementType.OR.value
+                if req_type == "or"
+                else RequirementType.AND.value
+            )
         if req_type == RequirementType.COURSE:
-            return Course.model_validate(requirement)
+            return Course(**requirement)
         elif req_type == RequirementType.FULL_COURSE:
-            return FullCourse.model_validate(requirement)
+            return FullCourse(**requirement)
         elif req_type == RequirementType.SECTION:
-            return Section.model_validate(requirement)
+            return Section(**requirement)
         elif req_type == RequirementType.OR:
-            return OrRequirement.model_validate(requirement)
+            return OrRequirement(**requirement)
         elif req_type == RequirementType.AND:
-            return AndRequirement.model_validate(requirement)
+            return AndRequirement(**requirement)
     else:
         raise ValueError("Invalid requirement format:", requirement)
 
@@ -284,9 +397,21 @@ def create_course_graph(data: dict, prerequisites: dict) -> nx.DiGraph:
     c_graph = nx.DiGraph()
 
     for section in data["requirementSections"]:
-        c_graph.add_node(section["title"], node_type="section")
-        reqs = [create_model_by_type(req) for req in section.get("requirements")]
-        handle_requirements(c_graph, reqs, section["title"], prerequisites)
+        if section["title"] != "Khoury Elective Courses":
+            c_graph.add_node(
+                section["title"],
+                data=Section.model_validate(
+                    {
+                        "title": section["title"],
+                        "requirements": [
+                            create_model_by_type(entry)
+                            for entry in section.get("requirements", [])
+                        ],
+                    }
+                ),
+            )
+            reqs = [create_model_by_type(req) for req in section.get("requirements")]
+            handle_requirements(c_graph, reqs, section["title"], prerequisites)
 
     return c_graph
 
@@ -317,47 +442,84 @@ def graph_courses(c_graph: nx.DiGraph):
     plt.show()
 
 
-def heuristic(
-    taken_courses: list[Course],
-    c_graph: nx.DiGraph,
-    neighboring_course: Course,
-    required_credits: int,
-):
-    credits_taken_so_far = sum(course.credits for course in taken_courses)
-
-    # Don't underestimate the cost to go
-    heuristic_value = max(required_credits - credits_taken_so_far, 0)
-
-    # Return if we've reached the goal
-    if heuristic_value == 0:
-        return 0
-
-    # Count of how many unfilled requirements this fulfills (or contributes to fulfilling)
-
-    # Figure out co-requisites
-
-    # Number of courses this will "unlock"
-
-    # Break ties with lower priority courses
-
-    return heuristic_value
+def heuristic(nodes: list):
+    return 0
 
 
-def a_star(c_graph: nx.DiGraph, starting_courses: set, required_credits: int):
-    frontier = []
-    starting_course = None
-    for course in starting_courses:
-        heapq.heappush(frontier, (0, course))
-        if starting_course is None:
-            starting_course = course
+def a_star(c_graph: nx.DiGraph, starting_courses: list, required_credits: int):
+    courses_to_take = []
+    credits_taken = 0
 
-    while frontier:
-        _, current = heapq.heappop(frontier)
-        incomplete_req, available_per_section = remaining_incomplete_requirements(
-            c_graph=c_graph, taken_courses=current
-        )
-        # Continue implementation here
-    return None  # No path found
+    while credits_taken < required_credits:
+        best_course = None
+        best_heuristic = float("inf")
+        best_cost = 0
+
+        for course, course_data in c_graph.nodes(data=True):
+            if course in courses_to_take:
+                continue
+            full_course = course_data.get("data")
+            if (
+                isinstance(full_course, FullCourse)
+                and (course not in courses_to_take)
+                and (
+                    full_course.prereqs is None
+                    or check_if_requirements_met(
+                        classes_taken=starting_courses,
+                        requirement=full_course.prereqs[0],
+                        c_graph=c_graph,
+                    )
+                )
+            ):
+                coreq_course_names = [
+                    coreq
+                    for _, coreq, d in c_graph.edges(course, data=True)
+                    if d.get("relation") == "coreq"
+                ]
+                coreqs_met = all(
+                    check_if_requirements_met(
+                        classes_taken=(starting_courses + courses_to_take),
+                        requirement=c_graph.nodes[coreq_course].get("coreqs"),
+                        c_graph=c_graph,
+                    )
+                    for coreq_course in coreq_course_names
+                )
+
+                prereqs_met = all(
+                    check_if_requirements_met(
+                        classes_taken=starting_courses,
+                        requirement=c_graph.nodes[coreq_course].get("prereqs"),
+                        c_graph=c_graph,
+                    )
+                    for coreq_course in coreq_course_names
+                )
+
+                cost_in_credits = sum(
+                    course_graph.nodes[course]["data"].credits
+                    if isinstance(course_graph.nodes[course]["data"], FullCourse)
+                    else 0
+                    for course in (coreq_course_names + [course])
+                    if isinstance(course, str) and course in c_graph.nodes
+                )
+
+                if (
+                    prereqs_met
+                    and coreqs_met
+                    and course not in (starting_courses + courses_to_take)
+                    and credits_taken + cost_in_credits <= FULL_COURSE_LOAD_CREDITS
+                ):
+                    hs = heuristic([course] + coreq_course_names)
+                    if hs < best_heuristic:
+                        best_heuristic = hs
+                        best_course = course
+                        best_cost = cost_in_credits
+        if best_course:
+            courses_to_take.append(best_course)
+            credits_taken += best_cost
+        else:
+            break
+
+    return courses_to_take
 
 
 # Load pre-requisite data
@@ -373,22 +535,47 @@ graph_courses(course_graph)
 print(remaining_incomplete_requirements(c_graph=course_graph, taken_courses=[]))
 
 sections = {entry.get("title") for entry in json_data.get("requirementSections")}
-print("What concentration are you?")
-concentration_section = "Artificial Intelligence"
+# print("What concentration are you?")
+# concentration_section = "Artificial Intelligence"
+#
+# # Check if "concentrations" key exists and is a dictionary
+# if "concentrations" in json_data and isinstance(json_data["concentrations"], dict):
+#     concentration_options = json_data["concentrations"].get("concentrationOptions")
+#     if isinstance(concentration_options, list):
+#         for concentration in concentration_options:
+#             if concentration.get("title") == concentration_section:
+#                 print(concentration)
+#                 break
+# else:
+#     print("No concentration information found in JSON data.")
 
-# Check if "concentrations" key exists and is a dictionary
-if "concentrations" in json_data and isinstance(json_data["concentrations"], dict):
-    concentration_options = json_data["concentrations"].get("concentrationOptions")
-    if isinstance(concentration_options, list):
-        for concentration in concentration_options:
-            if concentration.get("title") == concentration_section:
-                print(concentration)
-                break
-else:
-    print("No concentration information found in JSON data.")
-
-a_star(
-    course_graph,
-    {entry.get("title") for entry in json_data.get("requirementSections")},
-    required_credits=json_data.get("totalCreditsRequired"),
+req_sec = [entry.get("title") for entry in json_data.get("requirementSections")]
+overall_sections = sorted(
+    [
+        course_graph.nodes[node].get("data")
+        for node in course_graph.nodes
+        if node in req_sec
+    ],
+    key=lambda x: x.title,
 )
+
+taken_courses = []
+semester = 0
+while not all(
+    check_if_requirements_met(
+        classes_taken=taken_courses,
+        requirement=requirement_section,
+        c_graph=course_graph,
+    )
+    for requirement_section in overall_sections
+):
+    newly_taken_courses = a_star(
+        course_graph,
+        taken_courses,
+        required_credits=json_data.get("totalCreditsRequired"),
+    )
+    print(f"Semester {semester}: {newly_taken_courses}")
+    semester += 1
+    taken_courses = taken_courses.copy() + newly_taken_courses
+    if semester > 8:
+        break
