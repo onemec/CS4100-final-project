@@ -169,10 +169,8 @@ def handle_requirements(
 
     i = 0
     for requirement in requirements:
-        # If the requirement is a Course, parse it into a FullCourse
         if isinstance(requirement, (Course, FullCourse)):
             for entry in prerequisites:
-                # If the current course entry matches the prerequisite
                 if (
                     entry.get("subject") == requirement.subject
                     and int(entry.get("classId")) == requirement.classId
@@ -192,26 +190,6 @@ def handle_requirements(
                             if isinstance(entry.get("coreqs", {}), dict)
                             else entry.get("coreqs", {})
                         )
-                    prereqs = None
-                    coreqs = None
-                    if entry.get("prereqs", {}).get("values"):
-                        model_prereqs = entry.get("prereqs", {})
-                        if (
-                            isinstance(model_prereqs, dict)
-                            and "values" in model_prereqs
-                        ):
-                            model_prereqs["values"] = list(
-                                filter(None, model_prereqs.get("values", []))
-                            )
-                        prereq_name, i = node_to_name(
-                            model_prereqs, parent_node, i, graph
-                        )
-                        prereqs = (prereq_name, model_prereqs)
-                    if entry.get("coreqs", {}).get("values"):
-                        coreq_name, i = node_to_name(
-                            entry.get("coreqs", {}), parent_node, i, graph
-                        )
-                        coreqs = (coreq_name, entry.get("coreqs", {}))
                     full_course = FullCourse(
                         classId=requirement.classId,
                         subject=requirement.subject,
@@ -242,6 +220,7 @@ def handle_requirements(
                             "coreq",
                             prerequisites,
                         )
+                        graph.add_edge(full_course_name, coreqs[0], relation="coreq")
 
                     if full_course.prereqs and full_course.prereqs[1]:
                         add_node_with_check(
@@ -252,6 +231,7 @@ def handle_requirements(
                             "req",
                             prerequisites,
                         )
+                        graph.add_edge(prereqs[0], full_course_name, relation="req")
 
         elif isinstance(requirement, (AndRequirement, OrRequirement)):
             new_node = f"{parent_node}_{requirement.type.value}_{i}"
@@ -264,29 +244,20 @@ def handle_requirements(
                 new_node,
                 prerequisites,
             )
+    return graph
 
 
 def remaining_incomplete_requirements(c_graph: nx.DiGraph, taken_courses: list[Course]):
-    """
-    Calculate the remaining incomplete requirements based on the courses taken.
-
-    Args:
-        c_graph: The graph representing the courses and their dependencies.
-        taken_courses (list): The list of courses already taken.
-
-    Returns:
-        tuple: A tuple containing the number of unsatisfied categories and the shortest fulfillment for each category.
-    """
     unsatisfied_categories = 0
     shortest_fulfillment = []
 
     for requirement in c_graph.nodes(data=True):
         node_type = requirement[1].get("node_type")
-        if node_type == "section":
+        if node_type == RequirementType.SECTION.value:
             requirements = [
                 taken_course
                 for taken_course in c_graph.successors(requirement[0])
-                if taken_course not in taken_courses
+                if taken_course not in taken_courses and "_" not in taken_course
             ]
 
             if any(requirements):
@@ -409,9 +380,12 @@ def create_course_graph(data: dict, prerequisites: dict) -> nx.DiGraph:
                         ],
                     }
                 ),
+                node_type=RequirementType.SECTION.value,
             )
             reqs = [create_model_by_type(req) for req in section.get("requirements")]
-            handle_requirements(c_graph, reqs, section["title"], prerequisites)
+            c_graph = handle_requirements(
+                c_graph, reqs, section["title"], prerequisites
+            )
 
     return c_graph
 
@@ -442,8 +416,28 @@ def graph_courses(c_graph: nx.DiGraph):
     plt.show()
 
 
-def heuristic(nodes: list):
-    return 0
+def heuristic(c_graph: nx.DiGraph, starting_courses: list, nodes: list) -> float:
+    prev_unsat_categories, _ = remaining_incomplete_requirements(
+        c_graph, starting_courses
+    )
+    (
+        now_unsat_categories,
+        now_best_for_each_category,
+    ) = remaining_incomplete_requirements(c_graph, starting_courses + nodes)
+
+    # Estimate remaining semesters with an average of 4 courses per semester
+    remaining_semesters = max(now_unsat_categories - prev_unsat_categories, 0) / 4
+
+    # Convert the credits taken into a "semester" unit by dividing by 18 (credits per semester)
+    credits_taken = sum(
+        c_graph.nodes[course]["data"].credits
+        if isinstance(c_graph.nodes[course]["data"], FullCourse)
+        else 0
+        for course in (starting_courses + nodes)
+        if isinstance(course, str) and course in c_graph.nodes
+    )
+    credits_difference = max(0, credits_taken - FULL_COURSE_LOAD_CREDITS)
+    return remaining_semesters - credits_difference / 18.0
 
 
 def a_star(c_graph: nx.DiGraph, starting_courses: list, required_credits: int):
@@ -508,7 +502,9 @@ def a_star(c_graph: nx.DiGraph, starting_courses: list, required_credits: int):
                     and course not in (starting_courses + courses_to_take)
                     and credits_taken + cost_in_credits <= FULL_COURSE_LOAD_CREDITS
                 ):
-                    hs = heuristic([course] + coreq_course_names)
+                    hs = heuristic(
+                        c_graph, starting_courses, [course] + coreq_course_names
+                    )
                     if hs < best_heuristic:
                         best_heuristic = hs
                         best_course = course
@@ -519,7 +515,7 @@ def a_star(c_graph: nx.DiGraph, starting_courses: list, required_credits: int):
         else:
             break
 
-    return courses_to_take
+    return courses_to_take, credits_taken
 
 
 # Load pre-requisite data
@@ -532,7 +528,6 @@ course_graph = create_course_graph(
 )
 # Visualize the graph
 graph_courses(course_graph)
-print(remaining_incomplete_requirements(c_graph=course_graph, taken_courses=[]))
 
 sections = {entry.get("title") for entry in json_data.get("requirementSections")}
 # print("What concentration are you?")
@@ -569,13 +564,13 @@ while not all(
     )
     for requirement_section in overall_sections
 ):
-    newly_taken_courses = a_star(
+    newly_taken_courses, newly_taken_credits = a_star(
         course_graph,
         taken_courses,
         required_credits=json_data.get("totalCreditsRequired"),
     )
-    print(f"Semester {semester}: {newly_taken_courses}")
+    print(f"Semester {semester} ({newly_taken_credits} credits): {newly_taken_courses}")
     semester += 1
     taken_courses = taken_courses.copy() + newly_taken_courses
-    if semester > 8:
+    if newly_taken_credits == 0:
         break
